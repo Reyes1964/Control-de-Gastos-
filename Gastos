@@ -1,0 +1,128 @@
+import streamlit as st
+import pandas as pd
+import sqlite3
+from datetime import datetime
+
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Control de Compras", layout="centered")
+
+# --- BASE DE DATOS ---
+def conectar_db():
+    conn = sqlite3.connect("compras_web.db", check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("CREATE TABLE IF NOT EXISTS bancos (nombre TEXT)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS personas (nombre TEXT)")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS compras (
+                        mes TEXT, banco TEXT, persona TEXT, 
+                        importe REAL, descripcion TEXT, fecha TEXT)""")
+    conn.commit()
+    return conn
+
+db = conectar_db()
+
+# --- TÍTULO PRINCIPAL ---
+st.title("📱 Control de Compras")
+st.markdown("---")
+
+# --- MENÚ LATERAL (BOTONES) ---
+menu = st.sidebar.radio("MENÚ PRINCIPAL", ["Inicio", "Altas", "Captura Datos", "Reportes"])
+
+# --- SECCIÓN: INICIO ---
+if menu == "Inicio":
+    st.subheader("Bienvenido a tu Gestor Financiero")
+    st.info("Selecciona una opción en el menú de la izquierda para comenzar.")
+    # Resumen rápido
+    df_resumen = pd.read_sql("SELECT * FROM compras", db)
+    if not df_resumen.empty:
+        st.metric("Total Gastado (General)", f"${df_resumen['importe'].sum():,.2f}")
+
+# --- SECCIÓN: ALTAS ---
+elif menu == "Altas":
+    st.header("➕ Gestión de Catálogos")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Bancos")
+        nuevo_banco = st.text_input("Nombre del Banco")
+        if st.button("Guardar Banco"):
+            db.execute("INSERT INTO bancos VALUES (?)", (nuevo_banco,))
+            db.commit()
+            st.success("Banco guardado")
+        
+        bancos_registrados = pd.read_sql("SELECT * FROM bancos", db)
+        st.table(bancos_registrados)
+        if st.button("Borrar todos los Bancos"):
+            db.execute("DELETE FROM bancos")
+            db.commit()
+            st.rerun()
+
+    with col2:
+        st.subheader("Personas")
+        nueva_p = st.text_input("Nombre de Persona")
+        if st.button("Guardar Persona"):
+            db.execute("INSERT INTO personas VALUES (?)", (nueva_p,))
+            db.commit()
+            st.success("Persona guardada")
+            
+        personas_registradas = pd.read_sql("SELECT * FROM personas", db)
+        st.table(personas_registradas)
+
+# --- SECCIÓN: CAPTURA DATOS ---
+elif menu == "Captura Datos":
+    st.header("📝 Registro de Compra")
+    
+    bancos = [r[0] for r in db.execute("SELECT nombre FROM bancos").fetchall()]
+    personas = [r[0] for r in db.execute("SELECT nombre FROM personas").fetchall()]
+    meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+             "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+
+    with st.form("form_compra", clear_on_submit=True):
+        f_mes = st.selectbox("Mes", meses)
+        f_banco = st.selectbox("Banco", bancos)
+        f_persona = st.selectbox("Persona", personas)
+        f_importe = st.number_input("Importe ($)", min_value=0.0, step=0.1)
+        f_desc = st.text_input("Descripción")
+        
+        enviar = st.form_submit_button("Registrar Compra")
+        
+        if enviar:
+            fecha_iso = datetime.now().strftime("%Y-%m-%d")
+            db.execute("INSERT INTO compras VALUES (?,?,?,?,?,?)", 
+                       (f_mes, f_banco, f_persona, f_importe, f_desc, fecha_iso))
+            db.commit()
+            st.balloons()
+            st.success("¡Compra registrada con éxito!")
+
+# --- SECCIÓN: REPORTES ---
+elif menu == "Reportes":
+    st.header("📊 Reportes y Exportación")
+    
+    bancos = [r[0] for r in db.execute("SELECT nombre FROM bancos").fetchall()]
+    b_sel = st.selectbox("Filtrar por Banco", bancos)
+    
+    if b_sel:
+        query = f"SELECT mes, persona, importe, descripcion FROM compras WHERE banco = '{b_sel}' ORDER BY persona"
+        df = pd.read_sql(query, db)
+        
+        if not df.empty:
+            st.subheader(f"Gastos en {b_sel}")
+            st.dataframe(df, use_container_width=True)
+            
+            # Cálculo de Subtotales por Persona
+            st.markdown("### 💰 Subtotales por Persona")
+            subtotales = df.groupby("persona")["importe"].sum().reset_index()
+            for _, row in subtotales.iterrows():
+                st.write(f"**{row['persona']}:** ${row['importe']:,.2f}")
+            
+            st.divider()
+            st.metric("TOTAL BANCO", f"${df['importe'].sum():,.2f}")
+            
+            # Exportar a TXT
+            reporte_txt = f"REPORTE {b_sel}\n" + "="*20 + "\n"
+            reporte_txt += df.to_string(index=False)
+            reporte_txt += f"\n\nTOTAL: ${df['importe'].sum():,.2f}"
+            
+            st.download_button("📥 Descargar Reporte (.txt)", reporte_txt, file_name=f"Reporte_{b_sel}.txt")
+        else:
+            st.warning("No hay datos para este banco.")
